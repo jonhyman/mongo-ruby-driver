@@ -52,6 +52,14 @@ describe Mongo::Retryable do
     klass.new(operation, cluster)
   end
 
+  before :each do
+    allow(cluster).to receive(:servers).and_return([])
+    allow(cluster).to receive(:max_read_retries).and_return(2)
+    allow(cluster).to receive(:disconnect!)
+    allow(cluster).to receive(:reconnect!)
+    allow(cluster).to receive(:read_retry_interval).and_return(0.1)
+  end
+
   describe '#read_with_retry' do
 
     context 'when no exception occurs' do
@@ -69,8 +77,11 @@ describe Mongo::Retryable do
 
       before do
         expect(operation).to receive(:execute).and_raise(Mongo::Error::SocketError).ordered
-        expect(cluster).to receive(:max_read_retries).and_return(1).ordered
-        expect(cluster).to receive(:scan!).and_return(true).ordered
+        expect(cluster).to receive(:reconnect!).and_return(true).ordered
+        #expect(cluster).to receive(:disconnect!).and_return(true).ordered
+        allow(cluster).to receive(:max_read_retries).and_return(2)
+        expect(cluster).to receive(:read_retry_interval).and_return(0.1).ordered
+        allow(cluster).to receive(:servers).and_return([])
         expect(operation).to receive(:execute).and_return(true).ordered
       end
 
@@ -83,8 +94,11 @@ describe Mongo::Retryable do
 
       before do
         expect(operation).to receive(:execute).and_raise(Mongo::Error::SocketTimeoutError).ordered
-        expect(cluster).to receive(:max_read_retries).and_return(1).ordered
-        expect(cluster).to receive(:scan!).and_return(true).ordered
+        expect(cluster).to receive(:reconnect!).and_return(true).ordered
+        #expect(cluster).to receive(:disconnect!).and_return(true).ordered
+        allow(cluster).to receive(:max_read_retries).and_return(2)
+        expect(cluster).to receive(:read_retry_interval).and_return(0.1).ordered
+        allow(cluster).to receive(:servers).and_return([])
         expect(operation).to receive(:execute).and_return(true).ordered
       end
 
@@ -99,7 +113,7 @@ describe Mongo::Retryable do
 
         before do
           expect(operation).to receive(:execute).and_raise(Mongo::Error::OperationFailure).ordered
-          expect(cluster).to receive(:sharded?).and_return(false)
+          allow(cluster).to receive(:sharded?).and_return(false)
         end
 
         it 'raises an exception' do
@@ -114,18 +128,79 @@ describe Mongo::Retryable do
         context 'when the operation failure is not retryable' do
 
           let(:error) do
-            Mongo::Error::OperationFailure.new('not authorized')
+            Mongo::Error::OperationFailure.new('cursor not found')
           end
 
           before do
             expect(operation).to receive(:execute).and_raise(error).ordered
-            expect(cluster).to receive(:sharded?).and_return(true)
+            allow(cluster).to receive(:sharded?).and_return(true)
           end
 
           it 'raises the exception' do
             expect {
               retryable.read
             }.to raise_error(Mongo::Error::OperationFailure)
+          end
+        end
+
+        context 'when there is an authentication failure' do
+
+          context 'when it comes in via an OperationFailure' do
+
+            let(:error) do
+              Mongo::Error::OperationFailure.new('not authorized')
+            end
+
+            before do
+              expect(operation).to receive(:execute).and_raise(error).ordered
+              allow(cluster).to receive(:sharded?).and_return(true)
+              allow(cluster).to receive(:reconnect!)
+              allow(cluster).to receive(:max_read_retries).and_return(2)
+              expect(cluster).to receive(:read_retry_interval).and_return(0.1).ordered
+              expect(operation).to receive(:execute).and_return(true).ordered
+
+              mock_context = double(Mongo::Server::Context)
+              mock_connection = double(Mongo::Server::Connection)
+              mock_server = double(Mongo::Server, :context => mock_context)
+              expect(mock_context).to receive(:with_connection).and_yield(mock_connection)
+              expect(cluster).to receive(:servers).at_least(:once).and_return([mock_server])
+              allow(mock_server).to receive(:options)
+              expect(mock_connection).to receive(:authenticate!)
+            end
+
+            it 're-authenticates and retries the operation' do
+              expect(retryable.read).to be true
+            end
+          end
+
+          context 'when it comes in via a Mongo::Auth::Unauthorized' do
+
+            let(:error) do
+              Struct.new("UnauthorizedTestUser", :name, :database)
+              bad_user = Struct::UnauthorizedTestUser.new("foo", "test")
+              Mongo::Auth::Unauthorized.new(bad_user)
+            end
+
+            before do
+              expect(operation).to receive(:execute).and_raise(error).ordered
+              allow(cluster).to receive(:sharded?).and_return(true)
+              expect(cluster).to receive(:reconnect!).ordered
+              allow(cluster).to receive(:max_read_retries).and_return(2)
+              expect(cluster).to receive(:read_retry_interval).and_return(0.1).ordered
+              expect(operation).to receive(:execute).and_return(true).ordered
+
+              mock_context = double(Mongo::Server::Context)
+              mock_connection = double(Mongo::Server::Connection)
+              mock_server = double(Mongo::Server, :context => mock_context)
+              expect(mock_context).to receive(:with_connection).and_yield(mock_connection)
+              expect(cluster).to receive(:servers).at_least(:once).and_return([mock_server])
+              allow(mock_server).to receive(:options)
+              expect(mock_connection).to receive(:authenticate!)
+            end
+
+            it 're-authenticates and retries the operation' do
+              expect(retryable.read).to be true
+            end
           end
         end
 
@@ -138,8 +213,10 @@ describe Mongo::Retryable do
           context 'when the retry succeeds' do
 
             before do
+              allow(cluster).to receive(:disconnect!)
+              allow(cluster).to receive(:reconnect!)
               expect(operation).to receive(:execute).and_raise(error).ordered
-              expect(cluster).to receive(:sharded?).and_return(true)
+              allow(cluster).to receive(:sharded?).and_return(true)
               expect(cluster).to receive(:max_read_retries).and_return(1).ordered
               expect(cluster).to receive(:read_retry_interval).and_return(0.1).ordered
               expect(operation).to receive(:execute).and_return(true).ordered
@@ -154,12 +231,11 @@ describe Mongo::Retryable do
 
             before do
               expect(operation).to receive(:execute).and_raise(error).ordered
-              expect(cluster).to receive(:sharded?).and_return(true)
+              allow(cluster).to receive(:sharded?).and_return(true)
               expect(cluster).to receive(:max_read_retries).and_return(2).ordered
               expect(cluster).to receive(:read_retry_interval).and_return(0.1).ordered
               expect(operation).to receive(:execute).and_raise(error).ordered
-              expect(cluster).to receive(:sharded?).and_return(true)
-              expect(cluster).to receive(:max_read_retries).and_return(2).ordered
+              allow(cluster).to receive(:max_read_retries).and_return(3)
               expect(cluster).to receive(:read_retry_interval).and_return(0.1).ordered
               expect(operation).to receive(:execute).and_return(true).ordered
             end
@@ -190,7 +266,11 @@ describe Mongo::Retryable do
 
       before do
         expect(operation).to receive(:execute).and_raise(Mongo::Error::OperationFailure.new('not master')).ordered
-        expect(cluster).to receive(:scan!).and_return(true).ordered
+        allow(cluster).to receive(:servers).and_return([])
+        expect(cluster).to receive(:reconnect!).and_return(true).ordered
+        allow(cluster).to receive(:max_read_retries).and_return(2)
+        expect(cluster).to receive(:read_retry_interval).and_return(0.1).ordered
+
         expect(operation).to receive(:execute).and_return(true).ordered
       end
 
@@ -202,9 +282,12 @@ describe Mongo::Retryable do
     context 'when a not primary error occurs' do
 
       before do
-        expect(operation).to receive(:execute).and_raise(Mongo::Error::OperationFailure.new('Not primary')).ordered
-        expect(cluster).to receive(:scan!).and_return(true).ordered
-        expect(operation).to receive(:execute).and_return(true).ordered
+        expect(operation).to receive(:execute).and_raise(Mongo::Error::OperationFailure.new('Not primary'))
+        allow(cluster).to receive(:servers).and_return([])
+        allow(cluster).to receive(:max_read_retries).and_return(2)
+        allow(cluster).to receive(:read_retry_interval).and_return(0.1)
+
+        expect(operation).to receive(:execute).and_return(true)
       end
 
       it 'executes the operation twice' do

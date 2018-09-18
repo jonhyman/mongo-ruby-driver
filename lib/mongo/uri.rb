@@ -461,6 +461,10 @@ module Mongo
     uri_option 'compressors', :compressors, :type => :array
     uri_option 'zlibcompressionlevel', :zlib_compression_level
 
+    uri_option 'shareconnection', :share_connection
+    uri_option 'disconnectmonitor', :disconnect_monitor
+    uri_option 'alwaysscram', :always_use_scram
+
     # Casts option values that do not have a specifically provided
     # transformation to the appropriate type.
     #

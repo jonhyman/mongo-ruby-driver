@@ -19,6 +19,10 @@ module Mongo
   # @since 2.1.0
   module Retryable
 
+    NOT_MASTER = 'not master'.freeze
+    NOT_CONTACT_PRIMARY = 'could not contact primary'.freeze
+
+
     # Execute a read operation with a retry.
     #
     # @api private
@@ -42,17 +46,47 @@ module Mongo
       begin
         attempt += 1
         yield
-      rescue Error::SocketError, Error::SocketTimeoutError => e
-        raise(e) if attempt > cluster.max_read_retries
-        log_retry(e)
-        cluster.scan!
-        retry
-      rescue Error::OperationFailure => e
-        if cluster.sharded? && e.retryable?
-          raise(e) if attempt > cluster.max_read_retries
-          log_retry(e)
-          sleep(cluster.read_retry_interval)
-          retry
+      rescue Error::SocketError, Error::SocketTimeoutError, Error::OperationFailure, Mongo::Auth::Unauthorized => e
+        connection_error = e.kind_of?(Error::SocketError) || e.kind_of?(Error::SocketTimeoutError)
+        operation_failure = e.kind_of?(Error::OperationFailure)
+        auth_error = e.kind_of?(Mongo::Auth::Unauthorized)
+        sleep_multiplier = 1
+
+        if connection_error || auth_error || (operation_failure && (e.unauthorized? || e.retryable?))
+          # Reconnect will re-scan, which uses the Connection for the Monitor thread. As such, it will restart the
+          # monitor thread to continue to scan for updated mongoS
+          cluster.reconnect!
+        end
+
+        if (operation_failure && e.unauthorized?) || auth_error
+          sleep_multiplier = 2
+        end
+
+        if operation_failure && cluster.sharded? && e.retryable?
+          Mongo::Logger.logger.warn("[jontest] got error for read on #{cluster.servers.inspect}: #{e.inspect}, attempt #{attempt}, max retries is #{cluster.max_read_retries}")
+        else
+          Mongo::Logger.logger.warn("[jontest] got error for read on #{cluster.servers.inspect}: #{e.inspect}, attempt #{attempt}, max retries is #{cluster.max_read_retries}")
+        end
+        if connection_error || (operation_failure && cluster.sharded? && (e.retryable? || e.unauthorized?)) || auth_error
+          if attempt < cluster.max_read_retries
+            if (operation_failure && e.unauthorized?) || auth_error
+              Mongo::Logger.logger.warn("[jontest] got unauthorized for read on #{cluster.servers.inspect}, re-authenticating, attempt is #{attempt}, #{e.inspect()}")
+              begin
+                cluster.servers.each {|server| server.context.with_connection {|conn| conn.authenticate!(server.options) } }
+              rescue Mongo::Auth::Unauthorized
+                # Disconnect before we retry again
+                sleep_multiplier = 2
+                cluster.disconnect!
+              end
+            end
+
+            # We don't scan the cluster in this case as Mongos always returns
+            # ready after a ping no matter what the state behind it is.
+            sleep(cluster.read_retry_interval * sleep_multiplier)
+            retry
+          else
+            raise e
+          end
         else
           raise e
         end
@@ -148,22 +182,68 @@ module Mongo
       begin
         attempt += 1
         yield(server || cluster.next_primary)
-      rescue Error::OperationFailure => e
-        server = nil
-        raise(e) if attempt > Cluster::MAX_WRITE_RETRIES
-        if e.write_retryable?
-          log_retry(e)
-          cluster.scan!
-          retry
+      rescue Error::SocketError, Error::SocketTimeoutError, Error::OperationFailure, Error::NoServerAvailable, Mongo::Auth::Unauthorized, Mongo::Error, Mongo::Error::BulkWriteError => e
+        connection_error = e.kind_of?(Error::SocketError) || e.kind_of?(Error::SocketTimeoutError)
+        operation_failure = e.kind_of?(Error::OperationFailure)
+        no_server_available = e.kind_of?(Error::NoServerAvailable)
+        auth_error = e.kind_of?(Mongo::Auth::Unauthorized)
+        not_master = e.message.include?(NOT_MASTER) || e.message.include?(NOT_CONTACT_PRIMARY)
+        batch_write = e.message.include?('no progress was made executing batch write op'.freeze) || e.kind_of?(Mongo::Error::BulkWriteError)
+        write_unavailable = e.message.include?('write results unavailable'.freeze)
+        sleep_multiplier = 1
+        if connection_error || not_master || batch_write || no_server_available || auth_error || write_unavailable
+          if connection_error
+            Mongo::Logger.logger.warn("[jontest] got connection error in write on #{cluster.servers.inspect}, attempt #{attempt}")
+          elsif not_master
+            Mongo::Logger.logger.warn("[jontest] got not master in write on #{cluster.servers.inspect}, attempt #{attempt}")
+          elsif batch_write
+            Mongo::Logger.logger.warn("[jontest] got batch write failure in write on #{cluster.servers.inspect}, attempt #{attempt}")
+          elsif write_unavailable
+            Mongo::Logger.logger.warn("[jontest] got write unavailable in write on #{cluster.servers.inspect}, attempt #{attempt}")
+          elsif no_server_available
+            Mongo::Logger.logger.warn("[jontest] got no server available in write on #{cluster.servers.inspect}, will retry one more time")
+            attempt = cluster.max_read_retries - 1
+          end
+          # Reconnect will re-scan, which uses the Connection for the Monitor thread. As such, it will restart the
+          # monitor thread to continue to scan for updated mongoS
+          cluster.reconnect!
+        end
+
+        if (operation_failure && e.unauthorized?) || auth_error
+          sleep_multiplier = 2
+        end
+
+        if connection_error || (operation_failure && (e.retryable? || e.unauthorized?)) || no_server_available || auth_error || write_unavailable || batch_write
+          # We're using max_read_retries here but if we got one of the errors that is causing us to be here, we should be retrying
+          # often anyway
+          if attempt < cluster.max_read_retries
+            if (operation_failure && e.unauthorized?) || auth_error
+              Mongo::Logger.logger.warn("[jontest] got unauthorized for write on #{cluster.servers.inspect}, re-authenticating, attempt is #{attempt}, #{e.inspect()}")
+              begin
+                cluster.servers.each {|server| server.context.with_connection {|conn| conn.authenticate!(server.options) } }
+              rescue Mongo::Auth::Unauthorized
+                sleep_multiplier = 2
+                # Disconnect before we retry again
+                cluster.disconnect!
+              end
+            end
+
+            # We don't scan the cluster in this case as Mongos always returns
+            # ready after a ping no matter what the state behind it is.
+            sleep(cluster.read_retry_interval * sleep_multiplier)
+            retry
+          else
+            raise e
+          end
         else
-          raise(e)
+          raise e
         end
       end
     end
 
     # Log a warning so that any application slow down is immediately obvious.
     def log_retry(e)
-      Logger.logger.warn "Retry due to: #{e.class.name} #{e.message}"
+      Logger.logger.warn "[jontest] Retry due to: #{e.class.name} #{e.message}"
     end
   end
 end

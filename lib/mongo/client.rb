@@ -73,7 +73,10 @@ module Mongo
       :user,
       :wait_queue_timeout,
       :write,
-      :zlib_compression_level
+      :zlib_compression_level,
+      :share_connection,
+      :always_use_scram,
+      :disconnect_monitor
     ].freeze
 
     # The compression algorithms supported by the driver.

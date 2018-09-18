@@ -24,6 +24,7 @@ describe Mongo::Server::Connection do
       allow(cl).to receive(:app_metadata).and_return(app_metadata)
       allow(cl).to receive(:cluster_time).and_return(nil)
       allow(cl).to receive(:update_cluster_time)
+      allow(cl).to receive(:restart_cursor_reaper)
     end
   end
 

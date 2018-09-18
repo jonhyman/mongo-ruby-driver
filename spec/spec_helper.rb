@@ -48,10 +48,11 @@ require 'support/crud'
 require 'support/command_monitoring'
 require 'support/connection_string'
 require 'support/gridfs'
+require 'mongo/shared_connection_pool'
 
 RSpec.configure do |config|
   config.color     = true
-  config.fail_fast = true unless ENV['CI']
+  #config.fail_fast = true unless ENV['CI']
   config.formatter = 'documentation'
   config.include(Authorization)
 
@@ -70,6 +71,10 @@ RSpec.configure do |config|
       ADMIN_AUTHORIZED_TEST_CLIENT.database.users.create(TEST_USER)
     rescue Exception => e
     end
+  end
+
+  config.before(:each) do
+    Mongo::SharedConnectionPool.instance_variable_set(:@pools, {})
   end
 end
 

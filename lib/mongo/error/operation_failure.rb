@@ -28,8 +28,13 @@ module Mongo
         'no master',
         'not master',
         'could not contact primary',
-        'Not primary'
-      ].freeze
+        'Not primary',
+        'Primary stepped down while waiting for replication',
+        'write results unavailable',
+        'could not find host matching read preference',
+        'stepdown request while waiting for replication',
+        'demoted from primary while performing update'
+      ].map(&:downcase).freeze
 
       # These are magic error messages that could indicate a cluster
       # reconfiguration behind a mongos. We cannot check error codes as they
@@ -41,13 +46,37 @@ module Mongo
         'transport error',
         'socket exception',
         "can't connect",
+        'end of file',
         'connect failed',
         'error querying',
         'could not get last error',
         'connection attempt failed',
         'interrupted at shutdown',
         'unknown replica set',
-        'dbclient error communicating with server'
+        'dbclient error communicating with server',
+        'no progress was made executing batch write op',
+        'dbclient error communicating with server',
+        'Failed to call say, no good nodes',
+        'Failed to do query, no good nodes',
+        'assertion src/mongo/util/net/message.h:256',
+        'Shutdown in progress',
+        'shutdown in progress',
+        'could not find host matching read preference',
+        # InterruptedAtShutdown
+        '(11600)',
+        # "operation was interrupted"
+        '(11602)',
+        # NotMasterOrSecondary
+        '(13436)',
+        'error reading response',
+        'network error while attempting to run',
+        "Can't use connection pool during shutdown",
+        "aggregate command didn't return results on host"
+      ].map(&:downcase).freeze
+
+      UNAUTHORIZED_MESSAGES = [
+        'unauthorized',
+        'not authorized'
       ].freeze
 
       def_delegators :@result, :operation_time
@@ -61,7 +90,11 @@ module Mongo
       #
       # @since 2.1.1
       def retryable?
-        RETRY_MESSAGES.any?{ |m| message.include?(m) }
+        RETRY_MESSAGES.any?{ |m| message.downcase.include?(m) }
+      end
+
+      def unauthorized?
+        UNAUTHORIZED_MESSAGES.any?{ |m| message.downcase.include?(m) } && !message.downcase.include?("e11000 duplicate key".freeze)
       end
 
       # Can the write operation that caused the error be retried?
@@ -73,7 +106,7 @@ module Mongo
       #
       # @since 2.4.2
       def write_retryable?
-        WRITE_RETRY_MESSAGES.any? { |m| message.include?(m) }
+        WRITE_RETRY_MESSAGES.any? { |m| message.downcase.include?(m) }
       end
 
       # Create the operation failure.
