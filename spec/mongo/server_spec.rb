@@ -10,6 +10,7 @@ describe Mongo::Server do
     double('cluster').tap do |cl|
       allow(cl).to receive(:topology).and_return(topology)
       allow(cl).to receive(:app_metadata).and_return(app_metadata)
+      allow(cl).to receive(:restart_cursor_reaper)
     end
   end
 
@@ -163,6 +164,25 @@ describe Mongo::Server do
 
     it 'sets the options' do
       expect(server.options).to eq(TEST_OPTIONS.merge(:heartbeat_frequency => 5))
+    end
+
+    context 'when :disconnect_monitor is set' do
+
+      let(:server) do
+        described_class.new(
+          address,
+          cluster,
+          monitoring,
+          listeners,
+          TEST_OPTIONS.merge(:heartbeat_frequency => 5, :disconnect_monitor => true)
+        )
+      end
+
+      it 'stops the monitor' do
+        # stop! will get called on finalize
+        expect_any_instance_of(Mongo::Server::Monitor).to receive(:stop!).at_least(2).times
+        server
+      end
     end
   end
 

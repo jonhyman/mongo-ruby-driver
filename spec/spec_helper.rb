@@ -45,6 +45,7 @@ require 'support/crud'
 require 'support/command_monitoring'
 require 'support/connection_string'
 require 'support/gridfs'
+require 'mongo/shared_connection_pool'
 
 RSpec.configure do |config|
   config.color     = true
@@ -74,6 +75,10 @@ RSpec.configure do |config|
         begin ADMIN_AUTHORIZED_TEST_CLIENT.database.users.create(TEST_READ_WRITE_USER); rescue; end
       end
     end
+  end
+
+  config.before(:each) do
+    Mongo::SharedConnectionPool.instance_variable_set(:@pools, {})
   end
 end
 

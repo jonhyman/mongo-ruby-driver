@@ -13,6 +13,7 @@
 # limitations under the License.
 
 require 'mongo/cluster/topology'
+require 'mongo/shared_connection_pool'
 require 'mongo/cluster/cursor_reaper'
 require 'mongo/cluster/app_metadata'
 
@@ -198,8 +199,10 @@ module Mongo
       proc do
         begin; cursor_reaper.kill_cursors; rescue; end
         cursor_reaper.stop!
-        pools.values.each do |pool|
-          pool.disconnect!
+        if !share_connection?
+          pools.values.each do |pool|
+            pool.disconnect!
+          end
         end
       end
     end
@@ -270,9 +273,18 @@ module Mongo
     #
     # @since 2.2.0
     def pool(server)
-      @pool_lock.synchronize do
-        pools[server.address] ||= Server::ConnectionPool.get(server)
+      if share_connection?
+        Mongo::SharedConnectionPool.get(server)
+      else
+        @pool_lock.synchronize do
+          pools[server.address] ||= Server::ConnectionPool.get(server)
+        end
       end
+    end
+
+    # @return Whether or not this cluster should share an existing connection to the host:ip of the cluster
+    def share_connection?
+      options[:share_connection]
     end
 
     # Get the interval, in seconds, in which a mongos read operation is
@@ -376,6 +388,10 @@ module Mongo
       scan!
       servers.each { |server| server.reconnect! }
       @cursor_reaper.restart! and true
+    end
+
+    def restart_cursor_reaper
+      @cursor_reaper.restart!
     end
 
     # Add hosts in a description to the cluster.
