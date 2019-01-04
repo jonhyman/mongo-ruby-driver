@@ -42,14 +42,28 @@ module Mongo
         attempt += 1
         yield
       rescue Error::SocketError, Error::SocketTimeoutError => e
-        raise(e) if attempt > cluster.max_read_retries || (session && session.in_transaction?)
+        max_read_retries = cluster.max_read_retries
+        raise(e) if attempt > max_read_retries || (session && session.in_transaction?)
         log_retry(e)
+        Mongo::Logger.logger.warn("[jontest] got error for read on #{cluster.servers.inspect}: #{e.inspect}, attempt #{attempt}, max retries is #{max_read_retries}")
         cluster.scan!
         retry
       rescue Error::OperationFailure => e
-        if cluster.sharded? && e.retryable? && !(session && session.in_transaction?)
-          raise(e) if attempt > cluster.max_read_retries
+        if cluster.sharded? && (e.retryable? || e.unauthorized?) && !(session && session.in_transaction?)
+
+          if e.unauthorized?
+            # Disconnect all servers to force a reauthentication on retry, but bump up the attempt count so we don't
+            # hammer the system retrying in the event something is wrong
+            cluster.servers.each(&:disconnect!)
+            if attempt < cluster.max_read_retries - 2
+              attempt = cluster.max_read_retries - 2
+            end
+          end
+
+          max_read_retries = cluster.max_read_retries
+          raise(e) if attempt > max_read_retries
           log_retry(e)
+          Mongo::Logger.logger.warn("[jontest] got error for read on #{cluster.servers.inspect}: #{e.inspect}, attempt #{attempt}, max retries is #{max_read_retries}")
           sleep(cluster.read_retry_interval)
           retry
         else
@@ -117,10 +131,10 @@ module Mongo
         txn_num = session.in_transaction? ? session.txn_num : session.next_txn_num
         yield(server, txn_num)
       rescue Error::SocketError, Error::SocketTimeoutError => e
-        raise e if session.in_transaction? && !ending_transaction
+        raise e if session && session.in_transaction? && !ending_transaction
         retry_write(e, txn_num, &block)
       rescue Error::OperationFailure => e
-        raise e if (session.in_transaction? && !ending_transaction) || !e.write_retryable?
+        raise e if (session && session.in_transaction? && !ending_transaction) || !e.write_retryable?
         retry_write(e, txn_num, &block)
       end
     end
@@ -157,10 +171,51 @@ module Mongo
       begin
         attempt += 1
         yield(server || cluster.next_primary)
-      rescue Error::OperationFailure => e
+      rescue Error::SocketError, Error::SocketTimeoutError, Error::OperationFailure, Error::NoServerAvailable, Mongo::Error, Mongo::Error::BulkWriteError => e
+        connection_error = e.kind_of?(Error::SocketError) || e.kind_of?(Error::SocketTimeoutError)
+        operation_failure = e.kind_of?(Error::OperationFailure)
+        no_server_available = e.kind_of?(Error::NoServerAvailable)
+        auth_error = operation_failure && e.unauthorized?
+
+        not_master = e.message.include?('not master'.freeze) || e.message.include?('could not contact primary'.freeze)
+        batch_write = e.message.include?('no progress was made executing batch write op'.freeze) || e.kind_of?(Mongo::Error::BulkWriteError)
+        write_unavailable = e.message.include?('write results unavailable'.freeze)
+        pk_violation = e.message.include?("E11000".freeze)
+        if pk_violation
+          raise e
+        end
+
+        if connection_error || not_master || batch_write || no_server_available || write_unavailable || operation_failure
+          if connection_error
+            Mongo::Logger.logger.warn("[jontest] got connection error in write on #{cluster.servers.inspect}, attempt #{attempt}: #{e.inspect()}")
+          elsif not_master
+            Mongo::Logger.logger.warn("[jontest] got not master in write on #{cluster.servers.inspect}, attempt #{attempt}: #{e.inspect()}")
+          elsif batch_write
+            Mongo::Logger.logger.warn("[jontest] got batch write failure in write on #{cluster.servers.inspect}, attempt #{attempt}: #{e.inspect()}")
+          elsif write_unavailable
+            Mongo::Logger.logger.warn("[jontest] got write unavailable in write on #{cluster.servers.inspect}, attempt #{attempt}: #{e.inspect()}")
+          elsif no_server_available
+            Mongo::Logger.logger.warn("[jontest] got no server available in write on #{cluster.servers.inspect}, attempt #{attempt}: #{e.inspect()}")
+          elsif auth_error
+            Mongo::Logger.logger.warn("[jontest] got auth error in write on #{cluster.servers.inspect}, attempt #{attempt}: #{e.inspect()}")
+            # Disconnect all servers to force a reauthentication on retry, but bump up the attempt count so we don't
+            # hammer the system retrying in the event something is wrong
+            cluster.servers.each(&:disconnect!)
+            if attempt < cluster.max_read_retries - 2
+              attempt = cluster.max_read_retries - 2
+            end
+          elsif operation_failure
+            if e.respond_to?(:write_retryable?) && e.write_retryable?
+              Mongo::Logger.logger.warn("[jontest] got operation failure in write on #{cluster.servers.inspect}, attempt #{attempt}: #{e.inspect()}")
+            else
+              Mongo::Logger.logger.debug("[jontest] got operation failure in write on #{cluster.servers.inspect}, attempt #{attempt}: #{e.inspect()}")
+            end
+          end
+        end
+
         server = nil
-        raise(e) if attempt > Cluster::MAX_WRITE_RETRIES
-        if e.write_retryable? && !(session && session.in_transaction?)
+        raise(e) if attempt > cluster.max_read_retries
+        if e.respond_to?(:write_retryable?) && e.write_retryable? && !(session && session.in_transaction?)
           log_retry(e)
           cluster.scan!
           retry
@@ -172,7 +227,7 @@ module Mongo
 
     # Log a warning so that any application slow down is immediately obvious.
     def log_retry(e)
-      Logger.logger.warn "Retry due to: #{e.class.name} #{e.message}"
+      Logger.logger.warn "[jontest] Retry due to: #{e.class.name} #{e.message}"
     end
   end
 end

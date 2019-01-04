@@ -74,7 +74,12 @@ module Mongo
       :user,
       :wait_queue_timeout,
       :write,
-      :zlib_compression_level
+      :zlib_compression_level,
+      # TODO (Jon) - Remove these once we have confirmed the driver works fine. This is just in here so I can
+      # flip between versions of the driver without needing to update code.
+      :share_connection,
+      :disconnect_monitor,
+      :always_use_scram
     ].freeze
 
     # The compression algorithms supported by the driver.
