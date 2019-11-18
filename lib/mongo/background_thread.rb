@@ -30,6 +30,14 @@ module Mongo
     #
     # @api public for backwards compatibility only
     def run!
+      if @stop_requested && @thread
+        wait_for_stop
+        if @thread && @thread.alive?
+          log_warn("Starting a new background thread in #{self}, but the previous background thread is still running")
+          @thread = nil
+        end
+        @stop_requested = false
+      end
       if running?
         @thread
       else
@@ -79,35 +87,11 @@ module Mongo
       #
       # Note that this may cause the background thread to terminate in
       # the middle of an operation.
-      @thread.kill
-
-      # Wait for the thread to die. This is important in order to reliably
-      # clean up resources like connections knowing that no background
-      # thread will reconnect because it is still working.
-      #
-      # However, we do not want to wait indefinitely because in theory
-      # a background thread could be performing, say, network I/O and if
-      # the network is no longer available that could take a long time.
-      start_time = Time.now
-      ([0.1, 0.15] + [0.2] * 5 + [0.3] * 20).each do |interval|
-        begin
-          Timeout.timeout(interval) do
-            @thread.join
-          end
-          break
-        rescue Timeout::Error
-        end
+      if @thread
+        @thread.kill
       end
 
-      # Some driver objects can be reconnected, for backwards compatibiilty
-      # reasons. Clear the thread instance variable to support this cleanly.
-      if @thread.alive?
-        log_warn("Failed to stop background thread in #{self} in #{(Time.now - start_time).to_i} seconds")
-        false
-      else
-        @thread = nil
-        true
-      end
+      wait_for_stop
     end
 
     private
@@ -119,6 +103,42 @@ module Mongo
             do_work
           end
         end
+      end
+    end
+
+    # Waits for the thread to die, with a timeout.
+    #
+    # Returns true if the thread died, false otherwise.
+    def wait_for_stop
+      # Wait for the thread to die. This is important in order to reliably
+      # clean up resources like connections knowing that no background
+      # thread will reconnect because it is still working.
+      #
+      # However, we do not want to wait indefinitely because in theory
+      # a background thread could be performing, say, network I/O and if
+      # the network is no longer available that could take a long time.
+      start_time = Time.now
+      ([0.1, 0.15] + [0.2] * 5 + [0.3] * 20).each do |interval|
+        begin
+          Timeout.timeout(interval) do
+            if @thread
+              @thread.join
+            end
+          end
+          break
+        rescue Timeout::Error
+        end
+      end
+
+      # Some driver objects can be reconnected, for backwards compatibiilty
+      # reasons. Clear the thread instance variable to support this cleanly.
+      if @thread && @thread.alive?
+        log_warn("Failed to stop background thread in #{self} in #{(Time.now - start_time).to_i} seconds")
+        false
+      else
+        @thread = nil
+        @stop_requested = false
+        true
       end
     end
 

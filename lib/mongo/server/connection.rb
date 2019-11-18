@@ -314,7 +314,7 @@ module Mongo
               raise exc
             end
           rescue => e
-            log_warn("Failed to handshake with #{address}: #{e.class}: #{e}")
+            log_warn("[jontest] Failed to handshake with #{address}: #{e.class}: #{e}")
             raise
           end
         end
@@ -349,7 +349,7 @@ module Mongo
             if features.scram_sha_1_enabled?
               :scram
             else
-              :mongodb_cr
+              :scram
             end
           end
         else
@@ -362,12 +362,22 @@ module Mongo
 
       def authenticate!(pending_connection)
         if options[:user] || options[:auth_mech]
-          user = Auth::User.new(Options::Redacted.new(:auth_mech => default_mechanism).merge(options))
+          redacted_options = Options::Redacted.new(:auth_mech => default_mechanism).merge(options)
+          user = Auth::User.new(redacted_options)
+          retried = false
           @server.handle_auth_failure! do
             begin
               Auth.get(user).login(pending_connection)
             rescue => e
-              log_warn("Failed to handshake with #{address}: #{e.class}: #{e}")
+              if !retried
+                # Attempt to disconnect to try to re-authenticate
+                @server.pool.disconnect!
+                log_warn("[jontest] Failed to handshake with #{address}, retrying (#{redacted_options}): #{e.class}: #{e}")
+                retried = true
+                sleep(0.050)
+                retry
+              end
+              log_warn("[jontest] Failed to handshake with #{address}: #{e.class}: #{e}")
               raise
             end
           end
@@ -375,7 +385,7 @@ module Mongo
       end
 
       def default_mechanism
-        @auth_mechanism || (@server.features.scram_sha_1_enabled? ? :scram : :mongodb_cr)
+        @auth_mechanism || (@server.features.scram_sha_1_enabled? ? :scram : :scram)
       end
 
       def deliver(message)

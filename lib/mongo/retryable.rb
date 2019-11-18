@@ -104,7 +104,7 @@ module Mongo
         # here but upgrading Mongoid is strongly recommended.
         unless $_mongo_read_with_retry_warned
           $_mongo_read_with_retry_warned = true
-          Logger.logger.warn("Legacy read_with_retry invocation - please update the application and/or its dependencies")
+          Logger.logger.warn("[jontest] Legacy read_with_retry invocation - please update the application and/or its dependencies")
         end
         # Since we don't have a session, we cannot use the modern read retries.
         # And we need to select a server but we don't have a server selector.
@@ -210,7 +210,7 @@ module Mongo
         txn_num = session.in_transaction? ? session.txn_num : session.next_txn_num
         yield(server, txn_num, false)
       rescue Error::SocketError, Error::SocketTimeoutError => e
-        if session.in_transaction? && !ending_transaction
+        if session && session.in_transaction? && !ending_transaction
           raise
         end
         retry_write(e, session, txn_num, &block)
@@ -273,14 +273,15 @@ module Mongo
         attempt += 1
         server ||= select_server(cluster, ServerSelector.primary, session)
         yield server
-      rescue Error::OperationFailure => e
+      rescue Error::SocketError, Error::SocketTimeoutError, Error::OperationFailure, Error::NoServerAvailable, Mongo::Error, Mongo::Error::BulkWriteError => e
         server = nil
         if attempt > client.max_write_retries
           raise
         end
-        if e.write_retryable? && !(session && session.in_transaction?)
-          log_retry(e, message: 'Legacy write retry')
+        if !(session && session.in_transaction?) && ((e.kind_of?(Error::OperationFailure) && e.write_retryable?) || !e.kind_of?(Error::OperationFailure) )
+          log_retry(e, message: "Legacy write retry got operation failure in write on #{cluster.servers.inspect}, attempt #{attempt}: #{e.inspect()}")
           cluster.scan!(false)
+          sleep(client.read_retry_interval)
           retry
         else
           raise
@@ -296,12 +297,12 @@ module Mongo
       begin
         yield server
       rescue Error::SocketError, Error::SocketTimeoutError => e
-        if session.in_transaction?
+        if session && session.in_transaction?
           raise
         end
         retry_read(e, server_selector, session, &block)
       rescue Error::OperationFailure => e
-        if session.in_transaction? || !e.write_retryable?
+        if (session && session.in_transaction?) || !e.write_retryable?
           raise
         end
         retry_read(e, server_selector, session, &block)
@@ -318,15 +319,29 @@ module Mongo
         if attempt > client.max_read_retries || (session && session.in_transaction?)
           raise
         end
-        log_retry(e, message: 'Legacy read retry')
+        log_retry(e, message: "Legacy read retry for read on #{cluster.servers.inspect}: #{e.inspect}, attempt #{attempt}, max retries is #{client.max_read_retries}")
         server = select_server(cluster, server_selector, session)
+        if e.message.include?("EOFError")
+          cluster.disconnect!
+          cluster.reconnect!
+        end
         retry
-      rescue Error::OperationFailure => e
-        if cluster.sharded? && e.retryable? && !(session && session.in_transaction?)
+      rescue Error::OperationFailure, ArgumentError => e
+        conn_in_bad_state = (e.kind_of?(ArgumentError) && e.message.include?("is not valid UTF-8")) || e.message.include?("not null terminated string")
+        if conn_in_bad_state
+          Logger.logger.warn "[jontest] got server in bad state for #{cluster.servers.inspect}: #{e.inspect()}"
+          cluster.disconnect!(true)
+          cluster.reconnect!
+
+          # Only retry one more time
+          attempt = [attempt, client.max_read_retries].max()
+        end
+
+        if conn_in_bad_state || (e.kind_of?(Error::OperationFailure) && (cluster.sharded? && e.retryable? && !(session && session.in_transaction?)))
           if attempt > client.max_read_retries
             raise
           end
-          log_retry(e, message: 'Legacy read retry')
+          log_retry(e, message: "Legacy read retry for read on #{cluster.servers.inspect}: #{e.inspect}, attempt #{attempt}, max retries is #{client.max_read_retries}")
           sleep(client.read_retry_interval)
           server = select_server(cluster, server_selector, session)
           retry
@@ -404,7 +419,7 @@ module Mongo
       else
         "Retry"
       end
-      Logger.logger.warn "#{message} due to: #{e.class.name} #{e.message}"
+      Logger.logger.warn "[jontest] #{message} due to: #{e.class.name} #{e.message}"
     end
 
     # Retry writes on MMAPv1 should raise an actionable error; append actionable

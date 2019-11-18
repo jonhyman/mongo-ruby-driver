@@ -26,7 +26,7 @@ describe Mongo::Error::OperationFailure do
 
   describe '#write_retryable?' do
     context 'when there is a read retryable message' do
-      let(:error) { Mongo::Error::OperationFailure.new('problem: socket exception', nil) }
+      let(:error) { Mongo::Error::OperationFailure.new('problem:(13436)', nil) }
 
       it 'returns false' do
         expect(error.write_retryable?).to eql(false)

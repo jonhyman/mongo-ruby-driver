@@ -48,6 +48,23 @@ module Mongo
       WRITE_RETRY_MESSAGES = [
         'not master',
         'node is recovering',
+        'not master',
+        'could not contact primary',
+        'Not primary',
+        'Primary stepped down while waiting for replication',
+        'write results unavailable',
+        'could not find host matching read preference',
+        'stepdown request while waiting for replication',
+        'demoted from primary while performing',
+        # InterruptedAtShutdown
+        '(11600)',
+        # "operation was interrupted"
+        '(11602)',
+        'transport error',
+        'socket exception',
+        "can't connect",
+        'end of file',
+        'Connection reset by peer'
       ].freeze
 
       # These are magic error messages that could indicate a cluster
@@ -59,13 +76,30 @@ module Mongo
         'transport error',
         'socket exception',
         "can't connect",
+        'end of file',
         'connect failed',
         'error querying',
         'could not get last error',
         'connection attempt failed',
         'interrupted at shutdown',
         'unknown replica set',
-        'dbclient error communicating with server'
+        'dbclient error communicating with server',
+        'Server is shutting down',
+        'no progress was made executing batch write op',
+        'dbclient error communicating with server',
+        'Failed to call say, no good nodes',
+        'Failed to do query, no good nodes',
+        'assertion src/mongo/util/net/message.h:256',
+        'Shutdown in progress',
+        'shutdown in progress',
+        'could not find host matching read preference',
+        # NotMasterOrSecondary
+        '(13436)',
+        'error reading response',
+        'network error while attempting to run',
+        "Can't use connection pool during shutdown",
+        "aggregate command didn't return results on host",
+        "Callback canceled"
       ].freeze
 
       def_delegators :@result, :operation_time
