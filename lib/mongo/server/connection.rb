@@ -328,7 +328,7 @@ module Mongo
               raise exc
             end
           rescue => e
-            log_warn("Failed to handshake with #{address}: #{e.class}: #{e}:\n#{e.backtrace[0..5].join("\n")}")
+            log_warn("[jontest] Failed to handshake with #{address}: #{e.class}: #{e}:\n#{e.backtrace[0..5].join("\n")}")
             raise
           end
         end
