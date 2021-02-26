@@ -111,7 +111,7 @@ module Mongo
       def ismaster
         @lock.synchronize do
           if @connection && @connection.pid != Process.pid
-            log_warn("Detected PID change - Mongo client should have been reconnected (old pid #{@connection.pid}, new pid #{Process.pid}")
+            log_debug("Detected PID change - Mongo client should have been reconnected (old pid #{@connection.pid}, new pid #{Process.pid}")
             @connection.disconnect!
             @connection = nil
           end

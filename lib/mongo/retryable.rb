@@ -350,7 +350,7 @@ module Mongo
         if attempt > client.max_read_retries || (session && session.in_transaction?)
           raise e
         end
-        log_retry(e, message: 'Legacy read retry')
+        log_retry(e, message: "Legacy read retry for read on #{cluster.servers.inspect}: #{e.inspect}, attempt #{attempt}, max retries is #{client.max_read_retries}")
         server = select_server(cluster, server_selector, session)
         retry
       rescue Error::OperationFailure => e
@@ -360,7 +360,7 @@ module Mongo
           if attempt > client.max_read_retries
             raise e
           end
-          log_retry(e, message: 'Legacy read retry')
+          log_retry(e, message: "Legacy read retry for read on #{cluster.servers.inspect}: #{e.inspect}, attempt #{attempt}, max retries is #{client.max_read_retries}")
           sleep(client.read_retry_interval)
           server = select_server(cluster, server_selector, session)
           retry
@@ -477,7 +477,7 @@ module Mongo
       else
         "Retry"
       end
-      Logger.logger.warn "#{message} due to: #{e.class.name} #{e.message}"
+      Logger.logger.warn "[jontest] #{message} due to: #{e.class.name} #{e.message}"
     end
 
     # Retry writes on MMAPv1 should raise an actionable error; append actionable
